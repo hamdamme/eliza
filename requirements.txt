@@ -1,0 +1,4 @@
+# Python version
+python>=3.9
+
+# Standard libraries only, no extra packages needed
