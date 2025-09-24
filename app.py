@@ -25,7 +25,7 @@ PAGE = """
 </head>
 <body>
   <div class="chat">
-    <h1>Eliza Chatbot 🤖</h1>
+    <h1>Eliza Chatbot </h1>
     <div id="log" class="log"></div>
     <div class="row">
       <input id="msg" type="text" placeholder="Type a message... (say 'bye' to end)" autofocus />
