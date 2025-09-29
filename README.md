@@ -13,7 +13,7 @@ It uses pattern matching to recognize user input about feelings, relationships, 
 ## How to Run
 1. **Clone the repository**  
    bash
-   git clone https://github.com/YOUR-USERNAME/eliza.git
+   git clone https://github.com/hamdamme/eliza.git
    cd eliza
 
 2. Run the chatbot
