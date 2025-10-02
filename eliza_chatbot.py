@@ -10,8 +10,10 @@ from typing import Optional, List
 
 def find_name(response: str) -> str:
     """Extract a name if the user introduces themselves."""
-    match = re.match(r"(i[' ]?m|i am|my name is)?\s*([a-z]+)", response, re.I)
-    return match.group(2).capitalize() if match else ""
+    match = re.search(r"(?:i[' ]?m|i am|my name is)\s+([a-z]+(?:\s+[a-z]+)*)", response, re.I)
+    if match:
+        return match.group(1).strip().split()[0].capitalize()
+    return ""
 
 
 def find_feeling(response: str) -> Optional[str]:
@@ -23,8 +25,9 @@ def find_feeling(response: str) -> Optional[str]:
         "bad": ["bad", "poor", "unpleasant", "undesirable", "awful", "terrible"],
     }
     for key, words in feelings.items():
-        if any(re.search(rf"\b{word}\b", response, re.I) for word in words):
-            return key
+        for word in words:
+            if re.search(rf"\b{word}\b", response, re.I):
+                return key
     return None
 
 
@@ -56,18 +59,20 @@ def pick_standard_answer() -> str:
 
 
 def find_verb_ending_in_ed(response: str) -> List[str]:
-    """Extract verbs ending in 'ed'."""
-    return re.findall(r"\b(\w+?)ed\b", response, re.I)
+    """Extract verbs ending in 'ed' (ignores short words like 'red')."""
+    return re.findall(r"\b([a-z]{3,}ed)\b", response, re.I)
 
 
 def process(response: str, user_name: str) -> str:
     """Generate a chatbot response based on user input."""
+    response_clean = response.strip().lower()
+
+    if response_clean in {"bye", "exit", "quit"}:
+        return "Bye, it was great to chat with you!"
+
     relationship = find_relationship(response)
     feeling = find_feeling(response)
     verbs = find_verb_ending_in_ed(response)
-
-    if response.strip().lower() in {"bye", "exit", "quit"}:
-        return "Bye, it was great to chat with you!"
 
     if relationship:
         if feeling in ["sad", "bad"]:
@@ -85,9 +90,9 @@ def process(response: str, user_name: str) -> str:
 
     if verbs:
         action = " and ".join(verbs)
-        if "end" in verbs:
+        if "ended" in verbs:
             return "Why did it end?"
-        elif "start" in verbs:
+        elif "started" in verbs:
             return "When did it start?"
         return f"That's interesting. Can you elaborate on '{action}'?"
 
@@ -100,7 +105,7 @@ def main():
     name_input = input("User: ").strip()
     user_name = find_name(name_input) or "Sweetheart"
 
-    print(f"Eliza: Hello {user_name}, I was waiting for you, let's chat. How are you feeling?")
+    print(f"Eliza: Hello {user_name}, I was waiting for you. Let's chat. How are you feeling?")
 
     while True:
         try:
@@ -111,7 +116,7 @@ def main():
 
         response = process(user_input, user_name)
         print(f"Eliza: {response}")
-        if user_input.lower() in {"bye", "exit", "quit"}:
+        if user_input.strip().lower() in {"bye", "exit", "quit"}:
             break
 
 
