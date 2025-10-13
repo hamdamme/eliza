@@ -1,5 +1,4 @@
 # -*- coding: utf-8 -*-
-"""Comprehensive ELIZA (single-file, no deps)"""
 
 __author__ = "Hamdam Aynazarov"
 
