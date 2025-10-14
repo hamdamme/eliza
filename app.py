@@ -1,35 +1,23 @@
-# app.py — Flask web app for Eliza (Render-ready)
+# app.py — Flask web app for Eliza (Render-ready, greets by name on first detection)
 
 import os
 import inspect
 from flask import Flask, request, jsonify, render_template_string
 
-# Your ELIZA module:
-# must export: process(...), find_name(...)
-# may export: Memory (for 3-arg process)
-from eliza_chatbot import process, find_name  # noqa
-
-# Try to import Memory (newer version); if missing, make a tiny stub so old 2-arg works.
-try:
-    from eliza_chatbot import Memory  # noqa
-except Exception:
-    class Memory:
-        def __init__(self):
-            self.name = None
+# Your ELIZA module (this must be in eliza_chatbot.py)
+from eliza_chatbot import process, find_name, Memory  # uses your 3-arg process()
 
 DEFAULT_NAME = "Friend"
 app = Flask(__name__)
-
-# One simple in-memory state for the whole app
 mem = Memory()
 
-# Detect if process(message, user_name, mem) or process(message, user_name)
+# Detect arity just in case (supports older 2-arg process too)
 try:
     _argcount = len(inspect.signature(process).parameters)
 except Exception:
     _argcount = process.__code__.co_argcount
 
-# NOTE: this is a plain triple-quoted string (NOT an f-string), so braces in CSS/JS are safe.
+# NOTE: plain triple-quoted string (NOT an f-string) so JS/CSS braces are safe.
 PAGE = """
 <!doctype html>
 <html>
@@ -38,7 +26,7 @@ PAGE = """
   <title>Eliza Chatbot</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
-    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 2rem; }
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; margin: 2rem; }
     .chat { max-width: 720px; margin: 0 auto; }
     .log { border: 1px solid #ddd; border-radius: 8px; padding: 1rem; height: 360px; overflow-y: auto; background:#fafafa; }
     .msg { margin: .5rem 0; }
@@ -114,18 +102,26 @@ def index():
 def chat():
     data = request.get_json(force=True) or {}
     message = str(data.get("message", "")).strip()
-    # never default to "Sweetheart"
-    user_name = str(data.get("user_name") or "") or (getattr(mem, "name", None) or DEFAULT_NAME)
 
-    # Update name if user introduces themselves
-    maybe = find_name(message)
-    if maybe:
-        user_name = maybe
+    # Current known name (if any)
+    current_name = getattr(mem, "name", None)
 
-    # save into memory if available
-    if hasattr(mem, "name"):
-        mem.name = user_name
+    # Detect a name from this message
+    detected = find_name(message)
 
+    # First-time name detection → greet immediately and store it
+    if detected and not current_name:
+        mem.name = detected
+        return jsonify({
+            "reply": f"Nice to meet you, {detected}. How are you feeling today?",
+            "user_name": detected
+        })
+
+    # Use known or detected or default
+    user_name = current_name or detected or DEFAULT_NAME
+    mem.name = user_name  # keep memory consistent
+
+    # Call ELIZA (3-arg if available, else 2-arg)
     if _argcount >= 3:
         reply_text = process(message, user_name, mem)
     else:
