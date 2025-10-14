@@ -7,21 +7,26 @@ import random
 from typing import Optional, List
 from collections import deque
 
+# --- small anti-repetition buffer for general replies (after name is known) ---
 RECENT_REPLY_WINDOW = 4
 _last_responses = deque(maxlen=RECENT_REPLY_WINDOW)
 
-# Keywords
+# Basic keywords
 NEG_WORDS = {"bad", "sad", "upset", "depressed", "angry", "lonely", "tired", "hurt"}
 POS_WORDS = {"good", "great", "fine", "happy", "better", "okay"}
 CONFUSED_UTTS = {"i don't know", "idk", "not sure"}
 ACK_NEG = {"no", "nope", "nothing"}
 
 # Greetings & words we should NOT treat as names
-GREETING_WORDS = {"hi", "hello", "hey", "hola", "yo", "greetings"}
-NOT_NAME_WORDS = ACK_NEG | CONFUSED_UTTS | NEG_WORDS | POS_WORDS | GREETING_WORDS | {
-    "what", "why", "how", "who", "when", "where", "thanks", "thank", "please", "ok", "okay",
-    "bye", "exit", "quit"
+GREETING_WORDS = {
+    "hi", "hello", "hey", "hola", "yo", "greetings",
+    "good morning", "good afternoon", "good evening"
 }
+NOT_NAME_WORDS = (
+    ACK_NEG | CONFUSED_UTTS | NEG_WORDS | POS_WORDS | set(GREETING_WORDS) |
+    {"what", "why", "how", "who", "when", "where", "thanks", "thank", "please",
+     "ok", "okay", "bye", "exit", "quit"}
+)
 
 # Family/relations
 KINSHIP_WORDS = [
@@ -57,7 +62,7 @@ def _is_valid_name(token: str) -> bool:
     # allow letters, hyphen, apostrophe in names like "Jean-Paul", "O'Neil"
     if not re.fullmatch(r"[A-Za-z][A-Za-z\-']{0,30}", t):
         return False
-    # prefer it to look like a name (capitalized or all upper)
+    # accept if starts with a letter (no need to force uppercase—users may type lowercase)
     return t[0].isalpha()
 
 
@@ -108,17 +113,38 @@ def find_feeling(response: str) -> Optional[str]:
 
 def is_greeting(text: str) -> bool:
     t = _normalize(text)
-    return t in GREETING_WORDS
+    return any(t == g or t.startswith(g) for g in GREETING_WORDS)
 
 
 # ----------------- Memory -----------------
 
 class Memory:
     def __init__(self):
-        self.name = None
+        self.name: Optional[str] = None
 
 
 # ----------------- Main logic -----------------
+
+def _ask_for_name_again(user_text: str) -> str:
+    """Polite loop: acknowledge, then ask for name again, explain why."""
+    # If user greeted, acknowledge the greeting simply
+    if is_greeting(user_text):
+        return (
+            "Hello. I want to use your name so my sentences are clear and polite. "
+            "Please tell me your name. You can say: “My name is Sam.”"
+        )
+    # If they mentioned 'name' but not given
+    if "name" in _normalize(user_text):
+        return (
+            "I understand. Please tell me your exact name so I can address you well. "
+            "For example: “My name is Sam.” What is your name?"
+        )
+    # Any other text before giving a name
+    return (
+        "Thank you. I would like to address you by your name to make my words clear. "
+        "Please tell me your name. You can say: “My name is Sam.”"
+    )
+
 
 def process(response: str, user_name: str, mem: Memory) -> str:
     text = _normalize(response)
@@ -126,35 +152,22 @@ def process(response: str, user_name: str, mem: Memory) -> str:
     # Exit handling
     if text in {"bye", "exit", "quit"}:
         if mem.name:
-            return f"Goodbye, {mem.name}. I hope you find peace."
+            return f"Goodbye, {mem.name}. I wish you well."
         return "Goodbye. I wish you well."
 
-    # Name handling
-    if not mem.name:
-        # If user just greets, do not treat it as a name
-        if is_greeting(response):
-            return (
-                "I am Eliza. I would like to address you properly. "
-                "What is your name?"
-            )
+    # === Name handling loop: keep asking until a name is given ===
+    if mem.name is None:
         nm = find_name(response)
         if nm:
             mem.name = nm
             return (
-                f"Nice to meet you, {nm}. I hope you are doing alright. "
-                f"How are you feeling today?"
+                f"Nice to meet you, {nm}. "
+                f"How are you feeling today? "
+                f"You can share a little or a lot. "
+                f"I will read carefully."
             )
-        # If user mentions 'name' but we couldn't detect it, guide them simply
-        if "name" in text:
-            return (
-                "I want to use your correct name. "
-                "Please tell me like this: 'My name is Sam.' "
-                "What is your name?"
-            )
-        return (
-            "I am Eliza. I would like to address you properly. "
-            "What is your name?"
-        )
+        # politely ask again and explain why name helps
+        return _ask_for_name_again(response)
 
     # From here, name is known
     name = mem.name
@@ -164,9 +177,9 @@ def process(response: str, user_name: str, mem: Memory) -> str:
     if relation:
         return (
             f"Your {relation} seems important to you, {name}. "
-            f"I understand that family matters can affect us deeply. "
-            f"Would you like to tell me more about your {relation}? "
-            f"I am here to listen."
+            f"I understand that family can affect us strongly. "
+            f"Would you like to share what is happening with your {relation}? "
+            f"I will listen with care."
         )
 
     # Feelings
@@ -174,33 +187,33 @@ def process(response: str, user_name: str, mem: Memory) -> str:
     if feeling == "negative":
         return (
             f"I see you are not feeling well, {name}. "
-            f"It is alright to have difficult moments. "
-            f"If you wish, you can share what made you feel this way. "
-            f"I am here to listen calmly."
+            f"It is alright to have hard moments. "
+            f"If you wish, you can say what led to this feeling. "
+            f"I am here to listen."
         )
     elif feeling == "positive":
         return (
-            f"I am glad to hear this, {name}. "
+            f"I am glad to hear that, {name}. "
             f"It is good to notice positive moments. "
             f"What do you think helped you feel this way? "
-            f"Would you like to talk about it?"
+            f"You may share more if you want."
         )
 
     # Confusion
     if text in CONFUSED_UTTS:
         return (
             f"It is okay not to know, {name}. "
-            f"Some thoughts are not easy to explain. "
-            f"Take your time. "
-            f"I will listen whenever you are ready."
+            f"Some ideas are hard to explain. "
+            f"You can take your time and speak in small steps. "
+            f"I am listening."
         )
 
     # Negative acknowledgment
     if text in ACK_NEG:
         return (
             f"Alright, {name}. "
-            f"You do not need to force yourself to speak. "
-            f"If you wish to continue later, I will still be here. "
+            f"You do not need to push yourself. "
+            f"If you want to continue later, I will be here. "
             f"I respect your pace."
         )
 
@@ -208,31 +221,31 @@ def process(response: str, user_name: str, mem: Memory) -> str:
     if text == "what":
         return (
             f"Do you wish to ask something in particular, {name}? "
-            f"I am here to respond with care. "
-            f"Please feel free to continue. "
-            f"I am listening."
+            f"I will try to answer in simple and clear words. "
+            f"Please continue when you are ready. "
+            f"I am here."
         )
 
     # Default calm responses (3–4 simple sentences)
     responses = [
         (
             f"I understand, {name}. "
-            f"Sometimes it helps to express things slowly. "
-            f"If you want, you may continue at your own pace. "
-            f"I am here with patience."
+            f"You may share more if you wish. "
+            f"Short or long is fine. "
+            f"I will read with care."
         ),
         (
-            f"I hear you, {name}. "
-            f"Life can feel heavy at times. "
-            f"You may share as much as you feel comfortable. "
+            f"Thank you for telling me this, {name}. "
+            f"It is not always easy to talk. "
+            f"If there is more you want to add, please do. "
             f"I am here to listen."
         ),
         (
-            f"Thank you for sharing this, {name}. "
-            f"It may not always be easy to speak. "
-            f"If there is more you wish to say, I am here. "
-            f"Take your time."
-        )
+            f"I hear you, {name}. "
+            f"We can go step by step. "
+            f"Say whatever feels safe to say. "
+            f"I am patient."
+        ),
     ]
     return _anti_repeat_pick(responses)
 
@@ -240,7 +253,7 @@ def process(response: str, user_name: str, mem: Memory) -> str:
 # ----------------- CLI Mode (Optional) -----------------
 
 def main():
-    print("Eliza: Hello, I am Eliza. What is your name?")
+    print("Eliza: Hello. I am Eliza. What is your name?")
     mem = Memory()
     while True:
         try:
@@ -250,7 +263,7 @@ def main():
             break
 
         if not user_input:
-            print("Eliza: Take your time.")
+            print("Eliza: Please take your time. When you are ready, tell me your name.")
             continue
 
         resp = process(user_input, mem.name if mem.name else "", mem)
