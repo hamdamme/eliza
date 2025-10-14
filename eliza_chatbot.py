@@ -5,7 +5,7 @@ __author__ = "Hamdam Aynazarov"
 import re
 import random
 import datetime
-from typing import Optional, List
+from typing import Optional, List, Dict
 from collections import deque
 
 # =========================
@@ -33,6 +33,21 @@ ACK_AFFIRM = {"yes", "yep", "yeah", "sure", "ok", "okay", "fine", "alright"}
 SHORT_Q = {"what", "why", "how", "?"}
 JUST_YOU = {"you", "your", "yourself"}
 GREETING_WORDS = {"hi", "hello", "hey", "hola", "yo", "good morning", "good afternoon", "good evening"}
+
+CONFUSED_UTTS = {
+    "i don't know", "idk", "dont know", "i am not sure", "i'm not sure", "not sure", "dunno"
+}
+
+TIME_WORDS = {
+    "yesterday", "today", "last night", "tonight", "this morning", "this afternoon", "this evening"
+}
+
+COMMON_CORRECTIONS = {  # tiny typo map
+    "twon": "town",
+    "teh": "the",
+    "recieve": "receive",
+    "becuase": "because",
+}
 
 GENERIC_POOL = [
     "I’m listening. Say more about that.",
@@ -78,6 +93,19 @@ _last_responses = deque(maxlen=RECENT_REPLY_WINDOW)
 
 def _normalize(s: str) -> str:
     return re.sub(r"\s+", " ", s.strip().lower())
+
+
+def _apply_corrections(text: str) -> str:
+    """Very small typo fixer using a safe replacement table."""
+    def repl(m):
+        w = m.group(0)
+        lw = w.lower()
+        if lw in COMMON_CORRECTIONS:
+            fixed = COMMON_CORRECTIONS[lw]
+            # preserve capitalization if word was capitalized
+            return fixed.capitalize() if w[0].isupper() else fixed
+        return w
+    return re.sub(r"[A-Za-z]+", repl, text)
 
 
 def _anti_repeat_pick(candidates: List[str]) -> str:
@@ -168,6 +196,12 @@ class Memory:
         self.kinship: set = set()
         self.concerns: set = set()  # work / health / study / relationships
         self.mood: Optional[str] = None  # 'pos' | 'neg' | None
+        self.term_counts: Dict[str, int] = {}  # count mentions, e.g. "brother" -> 2
+        self.last_relation: Optional[str] = None
+
+    def bump(self, term: str):
+        term = term.lower()
+        self.term_counts[term] = self.term_counts.get(term, 0) + 1
 
     def remember_fact(self, fact: str):
         fact = fact.strip()
@@ -184,6 +218,8 @@ def extract_topics(mem: Memory, text: str):
     for k in KINSHIP_WORDS:
         if re.search(rf"\b{k}\b", text, re.I):
             mem.kinship.add(k)
+            mem.last_relation = k
+            mem.bump(k)
     t = text.lower()
     for tag, vocab in TOPIC_HINTS.items():
         if any(w in t for w in vocab):
@@ -196,6 +232,10 @@ def extract_topics(mem: Memory, text: str):
 def route_intent(user_raw: str, mem: Memory):
     s = user_raw.strip()
     n = _normalize(user_raw)
+
+    # Direct questions about identity
+    if re.search(r"\bwho\s+are\s+you\b", n):
+        return True, "I’m Eliza—a simple conversation program here to listen and ask helpful questions. How can I help?"
 
     if n in {"help", "?", "commands"}:
         return True, (
@@ -230,22 +270,32 @@ def route_intent(user_raw: str, mem: Memory):
 # Response engine
 # =========================
 def generate_candidates(user_raw: str, mem: Memory) -> List[str]:
-    user = _normalize(user_raw)
+    # Apply tiny typo corrections so routing works better
+    user_raw_fixed = _apply_corrections(user_raw)
+    user = _normalize(user_raw_fixed)
     cands: List[str] = []
 
-    # Boundary / exits handled in route_intent
+    # Hard-priority clarifiers for short utterances
+    if user in {"what", "?"}:
+        return [f"When you say “{user_raw.strip()}”, what do you mean?"]
+
+    if user in CONFUSED_UTTS:
+        return [
+            "That’s okay not to know. What small piece feels clearest right now?",
+            "We can find it together. What’s one detail you’re sure about?",
+        ]
 
     # Greeting
-    if detect_greeting(user_raw):
+    if detect_greeting(user_raw_fixed):
         name = mem.name or ""
-        cands += [
+        return [
             f"Hello{name and f' {name}'}! How are you feeling today?",
             f"Hi{name and f' {name}'}—what’s on your mind?",
             f"Hey{name and f' {name}'}! What would you like to talk about?",
         ]
 
     # Negative acknowledgements & “nothing”
-    if user in ACK_NEG or " nothing" == f" {user}" or user == "nothing":
+    if user in ACK_NEG or user == "nothing":
         cands += [
             "That’s okay. What makes you say that?",
             "Thanks for being direct. What’s behind that?",
@@ -261,9 +311,13 @@ def generate_candidates(user_raw: str, mem: Memory) -> List[str]:
             "Alright. What’s the key detail here?",
         ]
 
-    # Very short questions
-    if user in SHORT_Q or user in {"what", "?"}:
-        cands += [f"When you say “{user_raw.strip()}”, what do you mean?"]
+    # Time words (“yesterday”, etc.)
+    if any(t in user for t in TIME_WORDS):
+        cands += [
+            "What happened then?",
+            "What changed since then?",
+            "How did that time affect you?",
+        ]
 
     # “you” focus
     if user in JUST_YOU or (user.startswith("you") and len(user.split()) <= 3):
@@ -274,12 +328,21 @@ def generate_candidates(user_raw: str, mem: Memory) -> List[str]:
         ]
 
     # Relationship prompts
-    relation = find_relationship(user_raw)
-    feeling = find_feeling(user_raw)
-    verbs = find_verb_ending_in_ed(user_raw)
+    relation = find_relationship(user_raw_fixed)
+    feeling = find_feeling(user_raw_fixed)
+    verbs = find_verb_ending_in_ed(user_raw_fixed)
 
     if relation:
         mem.kinship.add(relation)
+        mem.last_relation = relation
+        mem.bump(relation)
+
+        # If the message is just the relation word, respond directly
+        if len(user.split()) == 1:
+            cands += [f"How is your {relation} doing?"]
+        if mem.term_counts.get(relation, 0) >= 2:
+            cands += [f"You’ve mentioned your {relation} a few times. What’s happening with them?"]
+
         if feeling in ["sad", "bad"]:
             cands += [f"I'm sorry to hear your {relation} is feeling {feeling}. What happened?"]
         elif feeling in ["happy", "good"]:
@@ -313,7 +376,7 @@ def generate_candidates(user_raw: str, mem: Memory) -> List[str]:
             cands += [f"That's interesting. Can you elaborate on “{action}”?"]
 
     # Sentiment nudge
-    s = _sentiment_hint(user_raw)
+    s = _sentiment_hint(user_raw_fixed)
     if s < 0:
         mem.mood = "neg"
         cands += [
@@ -328,15 +391,22 @@ def generate_candidates(user_raw: str, mem: Memory) -> List[str]:
         ]
 
     # Topic extraction + light “fact” capture
-    extract_topics(mem, user_raw)
-    m_fact = re.search(r"\b(i am|i'm|i feel|i have|i want|my)\b(.+)", user_raw, re.I)
+    extract_topics(mem, user_raw_fixed)
+    m_fact = re.search(r"\b(i am|i'm|i feel|i have|i want|my)\b(.+)", user_raw_fixed, re.I)
     if m_fact:
-        fact = user_raw.strip()
+        fact = user_raw_fixed.strip()
         if len(fact.split()) >= 3:
             mem.remember_fact(fact)
 
+    # “in town” follow-up leveraging last relation if we have it
+    if re.search(r"\bin\s+town\b", user_raw_fixed, re.I):
+        if mem.last_relation:
+            cands += [f"Is your {mem.last_relation} in town? What brings them here?"]
+        else:
+            cands += ["Who is in town, and what brings them here?"]
+
     # Reflective fallback + generic
-    short = " ".join(user_raw.split()[:14])
+    short = " ".join(user_raw_fixed.split()[:14])
     if short:
         cands += [f"When you say “{_reflect(short)}”, what do you hope will change?"]
     cands += GENERIC_POOL
@@ -351,6 +421,9 @@ def select_response(candidates: List[str]) -> str:
         s = min(len(c) // 40, 2)  # tiny length bonus
         if c in _last_responses:
             s -= 3                 # repetition penalty
+        # prioritize directed questions over generic fillers slightly
+        if "?" in c:
+            s += 1
         scored.append((s, c))
     scored.sort(key=lambda x: x[0], reverse=True)
     top = [c for _, c in scored[:6]] or candidates
@@ -362,12 +435,18 @@ def select_response(candidates: List[str]) -> str:
 # =========================
 def process(response: str, user_name: str, mem: Memory) -> str:
     """Generate a chatbot response based on user input."""
+    # Apply corrections early so detectors work better
+    response = _apply_corrections(response)
     rnorm = _normalize(response)
 
     # route intents first
     routed, msg = route_intent(response, mem)
     if routed:
         return msg
+
+    # High-priority short clarifier (avoid generic picking this away)
+    if rnorm in {"what", "?"}:
+        return f"When you say “{response.strip()}”, what do you mean?"
 
     # name detection (first turns)
     if not mem.name:
@@ -428,10 +507,12 @@ def main():
             break
 
         # simple log
-        _log(f"[{datetime.datetime.now().isoformat(timespec='seconds')}] {mem.name}: {user_input}")
-        _log(f"[{datetime.datetime.now().isoformat(timespec='seconds')}] Eliza: {resp}")
+        if ENABLE_LOG:
+            _log(f"[{datetime.datetime.now().isoformat(timespec='seconds')}] {mem.name}: {user_input}")
+            _log(f"[{datetime.datetime.now().isoformat(timespec='seconds')}] Eliza: {resp}")
 
     print("Eliza: Session ended.")
+
 
 # Entrypoint
 if __name__ == "__main__":
