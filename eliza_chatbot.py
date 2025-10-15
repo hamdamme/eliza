@@ -7,191 +7,199 @@ import random
 from typing import Optional, List
 from collections import deque
 
-# --- small anti-repetition buffer for general replies (after name is known) ---
-RECENT_REPLY_WINDOW = 4
-_last_responses = deque(maxlen=RECENT_REPLY_WINDOW)
+NEG_WORDS = {
+    "bad", "sad", "upset", "depressed", "angry", "lonely", "tired", "hurt",
+    "miserable", "terrible", "awful"
+}
+POS_WORDS = {"good", "great", "fine", "happy", "better", "okay", "ok", "glad"}
 
-# Basic keywords
-NEG_WORDS = {"bad", "sad", "upset", "depressed", "angry", "lonely", "tired", "hurt"}
-POS_WORDS = {"good", "great", "fine", "happy", "better", "okay"}
-CONFUSED_UTTS = {"i don't know", "idk", "not sure"}
-ACK_NEG = {"no", "nope", "nothing"}
-
-# Greetings & words we should NOT treat as names
-GREETING_WORDS = {
-    "hi", "hello", "hey", "hola", "yo", "greetings",
+GREETINGS = {
+    "hi", "hello", "hey", "hola", "yo",
     "good morning", "good afternoon", "good evening"
 }
-NOT_NAME_WORDS = (
-    ACK_NEG | CONFUSED_UTTS | NEG_WORDS | POS_WORDS | set(GREETING_WORDS) |
-    {"what", "why", "how", "who", "when", "where", "thanks", "thank", "please",
-     "ok", "okay", "bye", "exit", "quit"}
-)
+STOP_WORDS = {
+    "what", "why", "how", "who", "when", "where", "thanks", "thank", "please",
+    "ok", "okay", "bye", "exit", "quit", "nothing", "no", "nope", "idk",
+    "i don't know", "not sure"
+}
 
-# Family/relations
-KINSHIP_WORDS = [
+KINSHIP = [
     "mother", "mom", "father", "dad", "brother", "sister",
-    "wife", "husband", "son", "daughter", "friend"
+    "wife", "husband", "son", "daughter", "friend", "grandmother",
+    "grandfather", "aunt", "uncle", "cousin"
 ]
 
+RECENT_REPLY_WINDOW = 4
+_last_replies = deque(maxlen=RECENT_REPLY_WINDOW)
 
-# ----------------- Helpers -----------------
+
+# ----------------------------- helpers --------------------------------
 
 def _normalize(s: str) -> str:
     return re.sub(r"\s+", " ", s.strip().lower())
 
 
-def _anti_repeat_pick(options: List[str]) -> str:
+def _anti_repeat(options: List[str]) -> str:
     random.shuffle(options)
     for o in options:
-        if o not in _last_responses:
-            _last_responses.append(o)
+        if o not in _last_replies:
+            _last_replies.append(o)
             return o
-    c = random.choice(options)
-    _last_responses.append(c)
-    return c
+    choice = random.choice(options)
+    _last_replies.append(choice)
+    return choice
 
 
-def _is_valid_name(token: str) -> bool:
-    t = token.strip().strip(",.:;!?'\"").strip()
-    if not t:
-        return False
-    tl = t.lower()
-    if tl in NOT_NAME_WORDS:
-        return False
-    # allow letters, hyphen, apostrophe in names like "Jean-Paul", "O'Neil"
-    if not re.fullmatch(r"[A-Za-z][A-Za-z\-']{0,30}", t):
-        return False
-    # accept if starts with a letter (no need to force uppercase—users may type lowercase)
-    return t[0].isalpha()
+def _is_greeting(text: str) -> bool:
+    t = _normalize(text)
+    return any(t == g or t.startswith(g) for g in GREETINGS)
 
 
-# ----------------- Extractors -----------------
+def _is_name_like(token: str) -> bool:
+    # allow letters, hyphen, apostrophe
+    return bool(re.fullmatch(r"[A-Za-z][A-Za-z\-']{0,30}", token))
 
-def find_name(response: str) -> str:
-    """Extract a likely name; ignore greetings like 'Hi'."""
-    r = response.strip()
 
-    # Patterned introductions
+# ---------------------------- extractors -------------------------------
+
+def find_name(text: str) -> str:
+    """Return first name if clearly given; else ''."""
+    # explicit patterns
     m = re.search(
         r"(?:my\s+name\s+is|i\s*am|i[' ]?m|call\s+me|name\s*:\s*)([A-Za-z][A-Za-z\-']{1,30})",
-        r,
-        re.I,
+        text,
+        flags=re.I,
     )
     if m:
         cand = m.group(1).strip()
-        if _is_valid_name(cand):
-            return cand[0].upper() + cand[1:]
-        return ""
+        return cand[0].upper() + cand[1:] if _is_name_like(cand) else ""
 
-    # Single-token fallback (only if not a greeting/stop word)
-    toks = re.findall(r"[A-Za-z][A-Za-z\-']{1,30}", r)
+    # single-token fallback (but not greetings or stop words)
+    toks = re.findall(r"[A-Za-z][A-Za-z\-']{1,30}", text)
     if len(toks) == 1:
         tok = toks[0]
-        if _is_valid_name(tok) and tok.lower() not in GREETING_WORDS:
+        low = tok.lower()
+        if _is_name_like(tok) and low not in GREETINGS and low not in STOP_WORDS:
             return tok[0].upper() + tok[1:]
-
     return ""
 
 
-def find_relationship(response: str) -> Optional[str]:
-    for relation in KINSHIP_WORDS:
-        if re.search(rf"\b{relation}\b", response, re.I):
-            return relation
-    return None
-
-
-def find_feeling(response: str) -> Optional[str]:
+def find_feeling(text: str) -> Optional[str]:
     for w in NEG_WORDS:
-        if re.search(rf"\b{w}\b", response, re.I):
-            return "negative"
+        if re.search(rf"\b{w}\b", text, re.I):
+            return "neg"
     for w in POS_WORDS:
-        if re.search(rf"\b{w}\b", response, re.I):
-            return "positive"
+        if re.search(rf"\b{w}\b", text, re.I):
+            return "pos"
     return None
 
 
-def is_greeting(text: str) -> bool:
-    t = _normalize(text)
-    return any(t == g or t.startswith(g) for g in GREETING_WORDS)
+def find_relation(text: str) -> Optional[str]:
+    for r in KINSHIP:
+        if re.search(rf"\b{r}\b", text, re.I):
+            return r
+    return None
 
 
-# ----------------- Memory -----------------
+def find_ed_verbs(text: str) -> List[str]:
+    # simple verbs ending with -ed
+    return re.findall(r"\b([a-z]{3,}ed)\b", text, flags=re.I)
+
+
+# ------------------------------- memory --------------------------------
 
 class Memory:
     def __init__(self):
         self.name: Optional[str] = None
+        self.last_relation: Optional[str] = None
 
 
-# ----------------- Main logic -----------------
+# ---------------------------- name prompts -----------------------------
 
-def _ask_for_name_again(user_text: str) -> str:
-    """Polite loop: acknowledge, then ask for name again, explain why."""
-    # If user greeted, acknowledge the greeting simply
-    if is_greeting(user_text):
+def ask_name_prompt(user_text: str) -> str:
+    t = _normalize(user_text)
+
+    if _is_greeting(user_text):
         return (
-            "Hello. I want to use your name so my sentences are clear and polite. "
+            "Hello. I want to use your real name so my sentences are clear and polite. "
             "Please tell me your name. You can say: “My name is Sam.”"
         )
-    # If they mentioned 'name' but not given
-    if "name" in _normalize(user_text):
+
+    if "name" in t:
         return (
-            "I understand. Please tell me your exact name so I can address you well. "
-            "For example: “My name is Sam.” What is your name?"
+            "I want to address you correctly. Please tell me your exact name. "
+            "You can say: “My name is Sam.” What is your name?"
         )
-    # Any other text before giving a name
+
     return (
-        "Thank you. I would like to address you by your name to make my words clear. "
+        "Thank you. I would like to address you by your real name, so my words are clear. "
         "Please tell me your name. You can say: “My name is Sam.”"
     )
 
 
-def process(response: str, user_name: str, mem: Memory) -> str:
-    text = _normalize(response)
+# ----------------------------- main logic ------------------------------
 
-    # Exit handling
+def process(user_text: str, _user_name: str, mem: Memory) -> str:
+    text = _normalize(user_text)
+
+    # Exits
     if text in {"bye", "exit", "quit"}:
-        if mem.name:
-            return f"Goodbye, {mem.name}. I wish you well."
-        return "Goodbye. I wish you well."
+        return f"Goodbye, {mem.name}. I wish you well." if mem.name else "Goodbye. I wish you well."
 
-    # === Name handling loop: keep asking until a name is given ===
-    if mem.name is None:
-        nm = find_name(response)
+    # 1) Ask for name until we have it
+    if not mem.name:
+        nm = find_name(user_text)
         if nm:
             mem.name = nm
             return (
                 f"Nice to meet you, {nm}. "
                 f"How are you feeling today? "
-                f"You can share a little or a lot. "
-                f"I will read carefully."
+                f"You may share a little or a lot. "
+                f"I will read with care."
             )
-        # politely ask again and explain why name helps
-        return _ask_for_name_again(response)
+        return ask_name_prompt(user_text)
 
-    # From here, name is known
+    # From here we have a name
     name = mem.name
 
-    # Family handling
-    relation = find_relationship(response)
-    if relation:
+    # 2) Family / relation focus
+    rel = find_relation(user_text)
+    if rel:
+        mem.last_relation = rel
         return (
-            f"Your {relation} seems important to you, {name}. "
+            f"Your {rel} seems important to you, {name}. "
             f"I understand that family can affect us strongly. "
-            f"Would you like to share what is happening with your {relation}? "
+            f"Would you like to share what is happening with your {rel}? "
             f"I will listen with care."
         )
 
-    # Feelings
-    feeling = find_feeling(response)
-    if feeling == "negative":
+    # Detect “in town” and tie to last relation if we have one
+    if re.search(r"\bin\s+town\b", user_text, re.I):
+        if mem.last_relation:
+            return (
+                f"Is your {mem.last_relation} in town, {name}? "
+                f"What brings them here? "
+                f"How do you feel about it? "
+                f"You can share more if you wish."
+            )
+        else:
+            return (
+                f"Who is in town, {name}? "
+                f"What brings them here? "
+                f"How do you feel about it? "
+                f"You can share more if you wish."
+            )
+
+    # 3) Feelings
+    feeling = find_feeling(user_text)
+    if feeling == "neg":
         return (
             f"I see you are not feeling well, {name}. "
             f"It is alright to have hard moments. "
             f"If you wish, you can say what led to this feeling. "
             f"I am here to listen."
         )
-    elif feeling == "positive":
+    if feeling == "pos":
         return (
             f"I am glad to hear that, {name}. "
             f"It is good to notice positive moments. "
@@ -199,8 +207,49 @@ def process(response: str, user_name: str, mem: Memory) -> str:
             f"You may share more if you want."
         )
 
-    # Confusion
-    if text in CONFUSED_UTTS:
+    # 4) -ed verbs
+    ed_verbs = [v.lower() for v in find_ed_verbs(user_text)]
+    if ed_verbs:
+        if "started" in ed_verbs:
+            return (
+                f"When did it start, {name}? "
+                f"What was happening around that time? "
+                f"How did it affect you? "
+                f"You can tell me more if you wish."
+            )
+        if "ended" in ed_verbs:
+            return (
+                f"Do you know what led it to end, {name}? "
+                f"How do you feel about it now? "
+                f"What changed after it ended? "
+                f"I am here to read more if you want to share."
+            )
+        joined = ", ".join(sorted(set(ed_verbs))[:3])
+        return (
+            f"You mentioned “{joined}”, {name}. "
+            f"Would you like to explain what happened? "
+            f"What was most important to you? "
+            f"I will read carefully."
+        )
+
+    # 5) Short “what”
+    if text == "what":
+        return (
+            f"Do you want to ask something specific, {name}? "
+            f"I will try to answer in simple and clear words. "
+            f"Please continue when you are ready. "
+            f"I am here."
+        )
+
+    # 6) Acknowledgements and unclear cases
+    if text in {"nothing", "no", "nope"}:
+        return (
+            f"Alright, {name}. "
+            f"You do not need to push yourself. "
+            f"If you wish to continue later, I will be here. "
+            f"I respect your pace."
+        )
+    if text in {"i don't know", "idk", "not sure"}:
         return (
             f"It is okay not to know, {name}. "
             f"Some ideas are hard to explain. "
@@ -208,26 +257,8 @@ def process(response: str, user_name: str, mem: Memory) -> str:
             f"I am listening."
         )
 
-    # Negative acknowledgment
-    if text in ACK_NEG:
-        return (
-            f"Alright, {name}. "
-            f"You do not need to push yourself. "
-            f"If you want to continue later, I will be here. "
-            f"I respect your pace."
-        )
-
-    # Simple "what"
-    if text == "what":
-        return (
-            f"Do you wish to ask something in particular, {name}? "
-            f"I will try to answer in simple and clear words. "
-            f"Please continue when you are ready. "
-            f"I am here."
-        )
-
-    # Default calm responses (3–4 simple sentences)
-    responses = [
+    # 7) Default — clear, simple, not short
+    options = [
         (
             f"I understand, {name}. "
             f"You may share more if you wish. "
@@ -247,28 +278,27 @@ def process(response: str, user_name: str, mem: Memory) -> str:
             f"I am patient."
         ),
     ]
-    return _anti_repeat_pick(responses)
+    return _anti_repeat(options)
 
-
-# ----------------- CLI Mode (Optional) -----------------
 
 def main():
     print("Eliza: Hello. I am Eliza. What is your name?")
     mem = Memory()
     while True:
         try:
-            user_input = input("You: ").strip()
+            user = input("You: ").strip()
         except (KeyboardInterrupt, EOFError):
             print("\nEliza: Goodbye. I wish you well.")
             break
 
-        if not user_input:
+        if not user:
             print("Eliza: Please take your time. When you are ready, tell me your name.")
             continue
 
-        resp = process(user_input, mem.name if mem.name else "", mem)
-        print(f"Eliza: {resp}")
-        if _normalize(user_input) in {"bye", "exit", "quit"}:
+        reply = process(user, mem.name or "", mem)
+        print(f"Eliza: {reply}")
+
+        if _normalize(user) in {"bye", "exit", "quit"}:
             break
 
 
