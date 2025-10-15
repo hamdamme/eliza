@@ -1,13 +1,12 @@
-# app.py — Flask web app for Eliza (Render-ready, greets by name on first detection)
+# app.py — Flask web app for Eliza (Render-ready, name handled by chatbot)
 
 import os
 import inspect
 from flask import Flask, request, jsonify, render_template_string
 
-# Your ELIZA module (this must be in eliza_chatbot.py)
-from eliza_chatbot import process, find_name, Memory  # uses your 3-arg process()
+# Use your chatbot module
+from eliza_chatbot import process, Memory  # process(message, user_name, mem)
 
-DEFAULT_NAME = "Friend"
 app = Flask(__name__)
 mem = Memory()
 
@@ -52,7 +51,9 @@ PAGE = """
     const log = document.getElementById('log');
     const input = document.getElementById('msg');
     const sendBtn = document.getElementById('send');
-    let userName = "Friend";
+
+    // IMPORTANT: no default like "Friend" — empty until server sets it
+    let userName = "";
 
     function addMessage(text, who){
       const div = document.createElement('div');
@@ -80,7 +81,10 @@ PAGE = """
       }
 
       const data = await res.json();
-      userName = data.user_name || userName;
+      // Server will return mem.name once it’s set, otherwise ""
+      if (typeof data.user_name === 'string') {
+        userName = data.user_name;
+      }
       addMessage(data.reply, 'eliza');
     }
 
@@ -103,31 +107,18 @@ def chat():
     data = request.get_json(force=True) or {}
     message = str(data.get("message", "")).strip()
 
-    # Current known name (if any)
-    current_name = getattr(mem, "name", None)
-
-    # Detect a name from this message
-    detected = find_name(message)
-
-    # First-time name detection → greet immediately and store it
-    if detected and not current_name:
-        mem.name = detected
-        return jsonify({
-            "reply": f"Nice to meet you, {detected}. How are you feeling today?",
-            "user_name": detected
-        })
-
-    # Use known or detected or default
-    user_name = current_name or detected or DEFAULT_NAME
-    mem.name = user_name  # keep memory consistent
+    # Do NOT set any default name here.
+    # Let eliza_chatbot.process handle asking for and storing the real name.
+    current_name = mem.name or ""
 
     # Call ELIZA (3-arg if available, else 2-arg)
     if _argcount >= 3:
-        reply_text = process(message, user_name, mem)
+        reply_text = process(message, current_name, mem)
     else:
-        reply_text = process(message, user_name)
+        reply_text = process(message, current_name)  # legacy
 
-    return jsonify({"reply": reply_text, "user_name": user_name})
+    # Return whatever name is currently known ("" until user provides one)
+    return jsonify({"reply": reply_text, "user_name": mem.name or ""})
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
