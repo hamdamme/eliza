@@ -39,6 +39,7 @@ PAGE = """
 </head>
 <body>
   <div class="chat">
+    <p><a href="https://www.hamdam.me/#projects" style="color:#4f46e5;text-decoration:none">← Back to portfolio</a></p>
     <h1>Eliza Chatbot</h1>
     <div id="log" class="log" aria-live="polite"></div>
     <div class="row">
